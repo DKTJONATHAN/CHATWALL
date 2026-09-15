@@ -71,6 +71,15 @@ function render(chat) {
   messages.scrollIntoView({ behavior: 'smooth', block: 'end' });
 }
 
+function formatApiError(data, status) {
+  const parts = [];
+  if (data && data.error) parts.push(String(data.error));
+  else parts.push(`Request failed (${status})`);
+  if (data && data.hint) parts.push(String(data.hint));
+  if (data && data.github_status) parts.push(`GitHub HTTP ${data.github_status}`);
+  return parts.join(' — ');
+}
+
 async function parseResponse(r) {
   const text = await r.text();
   let data;
@@ -79,11 +88,11 @@ async function parseResponse(r) {
   } catch {
     throw new Error(
       text.trim().startsWith('<')
-        ? 'Cloudflare returned a webpage instead of the CHATWALL API. Redeploy the Worker and confirm run_worker_first includes /api/ai-room/*.'
-        : `API returned invalid JSON (${r.status}).`
+        ? 'Cloudflare returned a webpage instead of the CHATWALL API. Redeploy the Worker (wrangler deploy) and confirm run_worker_first includes /api/ai-room/*.'
+        : `API returned invalid JSON (${r.status}). Body: ${text.slice(0, 200)}`
     );
   }
-  if (!r.ok) throw new Error(data.error || `Request failed (${r.status})`);
+  if (!r.ok) throw new Error(formatApiError(data, r.status));
   return data;
 }
 
@@ -143,7 +152,28 @@ function poll() {
   }, 4000);
 }
 
-// Boot
-getLatest().then((c) => {
+// Boot — also probe health so token problems surface early
+(async () => {
+  try {
+    const r = await fetch(`${API}/health`, { cache: 'no-store', headers: { Accept: 'application/json' } });
+    const text = await r.text();
+    let data = {};
+    try {
+      data = JSON.parse(text);
+    } catch {
+      /* ignore */
+    }
+    if (!r.ok || data.ok === false) {
+      console.error('CHATWALL health failed', data);
+      setState('idle', 'API ERROR');
+      if (data.error || data.hint) {
+        finalBox.classList.remove('hidden');
+        finalText.textContent = formatApiError(data, r.status);
+      }
+    }
+  } catch (e) {
+    console.error(e);
+  }
+  const c = await getLatest();
   if (c && ['awaiting_gemini', 'awaiting_chatgpt', 'awaiting_gemini_counter'].includes(c.status)) poll();
-});
+})();
