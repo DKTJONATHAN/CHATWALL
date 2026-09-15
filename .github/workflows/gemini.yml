@@ -1,6 +1,10 @@
 name: CHATWALL - Gemini
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - 'data/chats/*.json'
   workflow_dispatch:
     inputs:
       chat_id:
@@ -31,16 +35,20 @@ jobs:
           set -euo pipefail
           python - <<'PY'
           import glob, json, os
-          wanted = os.environ['CHAT_ID']
+          wanted = os.environ.get('CHAT_ID')
+          candidates = []
           for path in glob.glob('data/chats/*.json'):
               with open(path, encoding='utf-8') as f:
                   chat = json.load(f)
-              if chat.get('id') == wanted:
-                  with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as out:
-                      out.write(f'path={path}\n')
+              if wanted and chat.get('id') == wanted:
+                  candidates = [path]
                   break
-          else:
-              raise SystemExit(f'Conversation {wanted} not found')
+              if not wanted and chat.get('status') == 'awaiting_gemini':
+                  candidates.append(path)
+          if not candidates:
+              raise SystemExit('No conversation awaiting Gemini')
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as out:
+              out.write(f'path={candidates[-1]}\n')
           PY
 
       - name: Run Gemini
@@ -58,7 +66,11 @@ jobs:
           git push origin main
 
       - name: Start ChatGPT
+        if: success()
         env:
           GH_TOKEN: ${{ github.token }}
-          CHAT_ID: ${{ inputs.chat_id }}
-        run: gh workflow run chatgpt.yml --ref main --field chat_id="$CHAT_ID"
+          CHAT_ID: ${{ inputs.chat_id || '' }}
+        run: |
+          if [ -z "$CHAT_ID" ]; then CHAT_ID=$(python -c "import json; print(json.load(open('${{ steps.locate.outputs.path }}'))['id'])"); fi
+          status=$(python -c "import json; print(json.load(open('${{ steps.locate.outputs.path }}'))['status'])")
+          if [ "$status" = "awaiting_chatgpt" ]; then gh workflow run chatgpt.yml --ref main --field chat_id="$CHAT_ID"; fi
