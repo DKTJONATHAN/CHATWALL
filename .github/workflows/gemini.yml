@@ -1,55 +1,64 @@
-name: CHATWALL — Gemini
+name: CHATWALL - Gemini
+
 on:
-  push:
-    branches: [main]
-    paths: ['data/chats/*.json']
   workflow_dispatch:
     inputs:
       chat_id:
-        required: false
+        description: Conversation ID
+        required: true
         type: string
+
 permissions:
   contents: write
   actions: write
+
 jobs:
   gemini:
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
-      - uses: actions/checkout@v4
-        with: {fetch-depth: 0}
-      - name: Find waiting chat
-        id: find
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Locate conversation
+        id: locate
         env:
-          CHAT_ID: '${{ inputs.chat_id || '' }}'
-          EVENT: '${{ github.event_name }}'
+          CHAT_ID: ${{ inputs.chat_id }}
+        shell: bash
         run: |
+          set -euo pipefail
           python - <<'PY'
-          import glob,json,os
-          wanted=os.environ['CHAT_ID']; event=os.environ['EVENT']; found=[]
-          allowed={'awaiting_gemini'} if event=='push' else {'awaiting_gemini','awaiting_gemini_counter'}
-          for p in glob.glob('data/chats/*.json'):
-            try:c=json.load(open(p))
-            except:continue
-            if (not wanted or c.get('id')==wanted) and c.get('status') in allowed: found.append((c.get('updated_at',''),p,c.get('id')))
-          if found:
-            _,p,i=sorted(found)[0]; o=open(os.environ['GITHUB_OUTPUT'],'a'); o.write(f'found=true\npath={p}\nid={i}\n'); o.close()
-          else: open(os.environ['GITHUB_OUTPUT'],'a').write('found=false\n')
+          import glob, json, os
+          wanted = os.environ['CHAT_ID']
+          for path in glob.glob('data/chats/*.json'):
+              with open(path, encoding='utf-8') as f:
+                  chat = json.load(f)
+              if chat.get('id') == wanted:
+                  with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as out:
+                      out.write(f'path={path}\n')
+                  break
+          else:
+              raise SystemExit(f'Conversation {wanted} not found')
           PY
+
       - name: Run Gemini
-        if: steps.find.outputs.found == 'true'
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_MODEL: gemini-2.5-flash
-        run: python scripts/ai-room-agent.py gemini '${{ steps.find.outputs.path }}'
-      - name: Commit Gemini turn
-        if: steps.find.outputs.found == 'true'
+        run: python scripts/ai-room-agent.py gemini '${{ steps.locate.outputs.path }}'
+
+      - name: Commit Gemini response
         run: |
-          git config user.name 'github-actions[bot]'; git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add '${{ steps.find.outputs.path }}'; git diff --cached --quiet || git commit -m 'chatwall: Gemini turn'; git push origin main
-      - name: Continue with ChatGPT
-        if: steps.find.outputs.found == 'true'
-        env: {GH_TOKEN: '${{ github.token }}'}
-        run: |
-          status=$(python -c "import json;print(json.load(open('${{ steps.find.outputs.path }}'))['status'])")
-          if [ "$status" = "awaiting_chatgpt" ]; then gh workflow run chatgpt.yml --ref main --field chat_id='${{ steps.find.outputs.id }}'; fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add '${{ steps.locate.outputs.path }}'
+          git diff --cached --quiet || git commit -m 'chatwall: Gemini turn'
+          git push origin main
+
+      - name: Start ChatGPT
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHAT_ID: ${{ inputs.chat_id }}
+        run: gh workflow run chatgpt.yml --ref main --field chat_id="$CHAT_ID"
