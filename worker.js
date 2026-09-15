@@ -1,12 +1,198 @@
-const OWNER='DKTJONATHAN', REPO='CHATWALL', BRANCH='main', DIR='data/chats';
-const GH='https://api.github.com';
-function headers(env){const token=String(env.PERSONAL_GITHUB_TOKEN||'').trim();if(!token)throw Object.assign(new Error('Cloudflare secret PERSONAL_GITHUB_TOKEN is missing'),{status:503});return {Authorization:`Bearer ${token}`,Accept:'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','Content-Type':'application/json','User-Agent':'chatwall-cloudflare'};}
-function b64(s){const bytes=new TextEncoder().encode(s);let x='';for(const b of bytes)x+=String.fromCharCode(b);return btoa(x)}
-function unb64(s){const x=atob(s.replace(/\s/g,''));const a=Uint8Array.from(x,c=>c.charCodeAt(0));return new TextDecoder().decode(a)}
-async function gh(env,url,init={}){const r=await fetch(`${GH}${url}`,{...init,headers:{...headers(env),...(init.headers||{})}});const d=await r.json().catch(()=>({}));if(!r.ok){const e=new Error(d.message||`GitHub API returned HTTP ${r.status}`);e.status=r.status;e.github_status=r.status;e.github_url=url;throw e}return d}
-function json(v,s=200){return new Response(JSON.stringify(v),{status:s,headers:{'content-type':'application/json; charset=utf-8','cache-control':'no-store','access-control-allow-origin':'*','access-control-allow-methods':'GET,POST,OPTIONS','access-control-allow-headers':'content-type'}})}
-async function list(env){try{return await gh(env,`/repos/${OWNER}/${REPO}/contents/${DIR}?ref=${BRANCH}`)}catch(e){if(e.status===404)return[];throw e}}
-async function read(env,path){const d=await gh(env,`/repos/${OWNER}/${REPO}/contents/${path}?ref=${BRANCH}`);return JSON.parse(unb64(d.content))}
-async function latest(env){const files=await list(env);const chats=files.filter(x=>x.type==='file'&&x.name.endsWith('.json')).sort((a,b)=>b.name.localeCompare(a.name));return chats.length?read(env,chats[0].path):null}
-async function create(env,thought){const text=String(thought||'').trim();if(text.length<2)return json({error:'Write at least two characters.'},400);if(text.length>12000)return json({error:'Thought is limited to 12,000 characters.'},400);const old=await latest(env);if(old&&['awaiting_gemini','awaiting_chatgpt','awaiting_gemini_counter'].includes(old.status))return json({error:'A debate is already running. Wait for the final answer.'},409);const id=`${Date.now()}-${crypto.randomUUID()}`;const now=new Date().toISOString();const chat={id,status:'awaiting_gemini',round:0,created_at:now,updated_at:now,messages:[{id:`user-${Date.now()}`,speaker:'user',text,created_at:now,round:0}]};await gh(env,`/repos/${OWNER}/${REPO}/contents/${DIR}/${id}.json`,{method:'PUT',body:JSON.stringify({message:`chatwall: start ${id}`,branch:BRANCH,content:b64(JSON.stringify(chat,null,2)+'\n')})});return json({ok:true,chat})}
-export default{async fetch(req,env){const u=new URL(req.url);if(req.method==='OPTIONS')return new Response(null,{status:204,headers:{'access-control-allow-origin':'*','access-control-allow-methods':'GET,POST,OPTIONS','access-control-allow-headers':'content-type'}});try{if(u.pathname==='/api/ai-room/latest'&&req.method==='GET')return json({chat:await latest(env)});if(u.pathname==='/api/ai-room/chats'&&req.method==='POST'){let body;try{body=await req.json()}catch{return json({error:'Invalid JSON.'},400)}return create(env,body.thought)}if(u.pathname.startsWith('/api/ai-room/'))return json({error:'Method not allowed.'},405);return env.ASSETS?env.ASSETS.fetch(req):new Response('Not found',{status:404})}catch(e){console.error('CHATWALL API error',e);const status=e.status===503?503:e.status===401||e.status===403?502:500;return json({error:e.status?`GitHub API ${e.status}: ${e.message}`:e.message,github_status:e.status,github_url:e.github_url},status)}}};
+const OWNER = 'DKTJONATHAN';
+const REPO = 'CHATWALL';
+const BRANCH = 'main';
+const DIR = 'data/chats';
+const GH = 'https://api.github.com';
+
+function headers(env) {
+  const token = String(env.PERSONAL_GITHUB_TOKEN || '').trim();
+  if (!token) {
+    throw Object.assign(new Error('Cloudflare secret PERSONAL_GITHUB_TOKEN is missing. Run: wrangler secret put PERSONAL_GITHUB_TOKEN'), { status: 503 });
+  }
+  return {
+    Authorization: `Bearer ${token}`,
+    Accept: 'application/vnd.github+json',
+    'X-GitHub-Api-Version': '2022-11-28',
+    'Content-Type': 'application/json',
+    'User-Agent': 'chatwall-cloudflare',
+  };
+}
+
+function b64(s) {
+  const bytes = new TextEncoder().encode(s);
+  let x = '';
+  for (const b of bytes) x += String.fromCharCode(b);
+  return btoa(x);
+}
+
+function unb64(s) {
+  const x = atob(s.replace(/\s/g, ''));
+  const a = Uint8Array.from(x, (c) => c.charCodeAt(0));
+  return new TextDecoder().decode(a);
+}
+
+async function gh(env, url, init = {}) {
+  const r = await fetch(`${GH}${url}`, {
+    ...init,
+    headers: { ...headers(env), ...(init.headers || {}) },
+  });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    const e = new Error(d.message || `GitHub API returned HTTP ${r.status}`);
+    e.status = r.status;
+    e.github_status = r.status;
+    e.github_url = url;
+    e.github_body = d;
+    throw e;
+  }
+  return d;
+}
+
+function json(v, s = 200) {
+  return new Response(JSON.stringify(v), {
+    status: s,
+    headers: {
+      'content-type': 'application/json; charset=utf-8',
+      'cache-control': 'no-store',
+      'access-control-allow-origin': '*',
+      'access-control-allow-methods': 'GET,POST,OPTIONS',
+      'access-control-allow-headers': 'content-type',
+    },
+  });
+}
+
+async function list(env) {
+  try {
+    return await gh(env, `/repos/${OWNER}/${REPO}/contents/${DIR}?ref=${BRANCH}`);
+  } catch (e) {
+    if (e.status === 404) return [];
+    throw e;
+  }
+}
+
+async function read(env, path) {
+  const d = await gh(env, `/repos/${OWNER}/${REPO}/contents/${path}?ref=${BRANCH}`);
+  return JSON.parse(unb64(d.content));
+}
+
+async function latest(env) {
+  const files = await list(env);
+  const chats = files
+    .filter((x) => x.type === 'file' && x.name.endsWith('.json'))
+    .sort((a, b) => b.name.localeCompare(a.name));
+  return chats.length ? read(env, chats[0].path) : null;
+}
+
+async function create(env, thought) {
+  const text = String(thought || '').trim();
+  if (text.length < 2) return json({ error: 'Write at least two characters.' }, 400);
+  if (text.length > 12000) return json({ error: 'Thought is limited to 12,000 characters.' }, 400);
+
+  const old = await latest(env);
+  if (old && ['awaiting_gemini', 'awaiting_chatgpt', 'awaiting_gemini_counter'].includes(old.status)) {
+    return json({ error: 'A debate is already running. Wait for the final answer.' }, 409);
+  }
+
+  const id = `${Date.now()}-${crypto.randomUUID()}`;
+  const now = new Date().toISOString();
+  const chat = {
+    id,
+    status: 'awaiting_gemini',
+    round: 0,
+    created_at: now,
+    updated_at: now,
+    messages: [
+      {
+        id: `user-${Date.now()}`,
+        speaker: 'user',
+        text,
+        created_at: now,
+        round: 0,
+      },
+    ],
+  };
+
+  await gh(env, `/repos/${OWNER}/${REPO}/contents/${DIR}/${id}.json`, {
+    method: 'PUT',
+    body: JSON.stringify({
+      message: `chatwall: start ${id}`,
+      branch: BRANCH,
+      content: b64(JSON.stringify(chat, null, 2) + '\n'),
+    }),
+  });
+
+  return json({ ok: true, chat });
+}
+
+async function health(env) {
+  try {
+    headers(env); // throws 503 if secret missing
+    await gh(env, `/repos/${OWNER}/${REPO}`);
+    return json({ ok: true, github: 'reachable', repo: `${OWNER}/${REPO}` });
+  } catch (e) {
+    const status = e.status === 503 ? 503 : e.status === 401 || e.status === 403 ? 502 : 500;
+    return json(
+      {
+        ok: false,
+        error: e.message,
+        github_status: e.status || null,
+        hint:
+          e.status === 503
+            ? 'Set Cloudflare secret: wrangler secret put PERSONAL_GITHUB_TOKEN'
+            : e.status === 401 || e.status === 403
+              ? 'Token lacks access to this repository or is invalid'
+              : 'Check Worker logs',
+      },
+      status
+    );
+  }
+}
+
+export default {
+  async fetch(req, env) {
+    const u = new URL(req.url);
+    if (req.method === 'OPTIONS') {
+      return new Response(null, {
+        status: 204,
+        headers: {
+          'access-control-allow-origin': '*',
+          'access-control-allow-methods': 'GET,POST,OPTIONS',
+          'access-control-allow-headers': 'content-type',
+        },
+      });
+    }
+
+    try {
+      if (u.pathname === '/api/ai-room/health' && req.method === 'GET') {
+        return health(env);
+      }
+      if (u.pathname === '/api/ai-room/latest' && req.method === 'GET') {
+        return json({ chat: await latest(env) });
+      }
+      if (u.pathname === '/api/ai-room/chats' && req.method === 'POST') {
+        let body;
+        try {
+          body = await req.json();
+        } catch {
+          return json({ error: 'Invalid JSON.' }, 400);
+        }
+        return create(env, body.thought);
+      }
+      if (u.pathname.startsWith('/api/ai-room/')) {
+        return json({ error: 'Method not allowed.' }, 405);
+      }
+      return env.ASSETS ? env.ASSETS.fetch(req) : new Response('Not found', { status: 404 });
+    } catch (e) {
+      console.error('CHATWALL API error', e);
+      const status = e.status === 503 ? 503 : e.status === 401 || e.status === 403 ? 502 : 500;
+      return json(
+        {
+          error: e.status ? `GitHub API ${e.status}: ${e.message}` : e.message,
+          github_status: e.status || null,
+          github_url: e.github_url || null,
+        },
+        status
+      );
+    }
+  },
+};

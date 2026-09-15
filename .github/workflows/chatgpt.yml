@@ -12,10 +12,14 @@ permissions:
   contents: write
   actions: write
 
+concurrency:
+  group: chatwall-debate
+  cancel-in-progress: false
+
 jobs:
   chatgpt:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -30,40 +34,69 @@ jobs:
         run: |
           set -euo pipefail
           python - <<'PY'
-          import glob, json, os
-          wanted = os.environ['CHAT_ID']
-          for path in glob.glob('data/chats/*.json'):
-              with open(path, encoding='utf-8') as f:
-                  chat = json.load(f)
+          import glob, json, os, sys
+          wanted = os.environ['CHAT_ID'].strip()
+          for path in sorted(glob.glob('data/chats/*.json')):
+              try:
+                  with open(path, encoding='utf-8') as f:
+                      chat = json.load(f)
+              except Exception:
+                  continue
               if chat.get('id') == wanted:
+                  status = chat.get('status')
+                  if status != 'awaiting_chatgpt':
+                      print(f'Conversation {wanted} status is {status!r}, not awaiting_chatgpt — skip.')
+                      with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as out:
+                          out.write('skip=true\n')
+                      sys.exit(0)
                   with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as out:
-                      out.write(f'path={path}\n')
+                      out.write(f'skip=false\npath={path}\n')
+                  print(f'Using {path}')
                   break
           else:
-              raise SystemExit(f'Conversation {wanted} not found')
+              print(f'Conversation {wanted} not found — skip.')
+              with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as out:
+                  out.write('skip=true\n')
+              sys.exit(0)
           PY
 
       - name: Run ChatGPT
+        if: steps.locate.outputs.skip != 'true'
         env:
           CHATGPT_API_KEY: ${{ secrets.CHATGPT_API_KEY }}
-          CHATGPT_MODEL: gpt-5
-        run: python scripts/ai-room-agent.py chatgpt '${{ steps.locate.outputs.path }}'
+          CHATGPT_MODEL: gpt-5.6
+        run: |
+          if [ -z "${CHATGPT_API_KEY:-}" ]; then
+            echo "CHATGPT_API_KEY secret is missing" >&2
+            exit 1
+          fi
+          python scripts/ai-room-agent.py chatgpt '${{ steps.locate.outputs.path }}'
 
       - name: Commit ChatGPT response
+        if: steps.locate.outputs.skip != 'true'
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add '${{ steps.locate.outputs.path }}'
-          git diff --cached --quiet || git commit -m 'chatwall: ChatGPT turn'
-          git push origin main
+          if git diff --cached --quiet; then
+            echo 'No changes to commit'
+          else
+            git commit -m 'chatwall: ChatGPT turn'
+            git push origin main
+          fi
 
       - name: Start Gemini counter
-        if: success()
+        if: steps.locate.outputs.skip != 'true' && success()
         env:
           GH_TOKEN: ${{ github.token }}
           CHAT_ID: ${{ inputs.chat_id }}
         run: |
-          status=$(python -c "import json; print(json.load(open('${{ steps.locate.outputs.path }}'))['status'])")
+          PATH_FILE='${{ steps.locate.outputs.path }}'
+          status=$(python -c "import json; print(json.load(open('$PATH_FILE'))['status'])")
+          echo "status=$status"
           if [ "$status" = "awaiting_gemini_counter" ]; then
             gh workflow run gemini.yml --ref main --field chat_id="$CHAT_ID"
+            echo "Dispatched Gemini counter workflow"
+          else
+            echo "Not dispatching Gemini (status is $status)"
           fi
