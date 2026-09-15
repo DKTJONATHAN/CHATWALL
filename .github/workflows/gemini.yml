@@ -20,18 +20,22 @@ jobs:
         with: {fetch-depth: 0}
       - name: Find waiting chat
         id: find
-        env: {CHAT_ID: '${{ inputs.chat_id || '' }}'}
+        env:
+          CHAT_ID: '${{ inputs.chat_id || '' }}'
+          EVENT: '${{ github.event_name }}'
         run: |
           python - <<'PY'
           import glob,json,os
-          wanted=os.environ['CHAT_ID']; found=[]
+          wanted=os.environ['CHAT_ID']; event=os.environ['EVENT']; found=[]
+          allowed={'awaiting_gemini'} if event=='push' else {'awaiting_gemini','awaiting_gemini_counter'}
           for p in glob.glob('data/chats/*.json'):
             try:c=json.load(open(p))
             except:continue
-            if (not wanted or c.get('id')==wanted) and c.get('status') in {'awaiting_gemini','awaiting_gemini_counter'}: found.append((c.get('updated_at',''),p,c.get('id')))
+            if (not wanted or c.get('id')==wanted) and c.get('status') in allowed: found.append((c.get('updated_at',''),p,c.get('id')))
           if found:
             _,p,i=sorted(found)[0]; o=open(os.environ['GITHUB_OUTPUT'],'a'); o.write(f'found=true\npath={p}\nid={i}\n'); o.close()
           else: open(os.environ['GITHUB_OUTPUT'],'a').write('found=false\n')
+          PY
       - name: Run Gemini
         if: steps.find.outputs.found == 'true'
         env:
