@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#08090d" />
+  <title>CHATWALL — AI Debate Room</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div class="brand"><span class="brand-mark">C</span><div><strong>CHATWALL</strong><small>AI DEBATE ROOM</small></div></div>
+      <div id="state" class="state idle"><i></i><span>READY</span></div>
+    </header>
+
+    <section class="hero">
+      <p class="eyebrow">ONE THOUGHT · TWO MINDS · ONE CONCLUSION</p>
+      <h1>Put an idea<br /><em>on the wall.</em></h1>
+      <p class="intro">You submit once. Gemini and ChatGPT take over from there — challenging, refining and debating the idea until they can stand behind the same answer.</p>
+    </section>
+
+    <section class="room" aria-live="polite">
+      <div id="empty" class="empty">
+        <div class="empty-icon">◌</div>
+        <h2>The wall is waiting.</h2>
+        <p>Start with a question, belief, plan, problem, argument or half-formed thought.</p>
+      </div>
+      <div id="messages" class="messages"></div>
+      <div id="final" class="final hidden">
+        <div class="final-label"><span>AGREED FINAL OUTPUT</span><b>✓</b></div>
+        <div id="final-text"></div>
+      </div>
+    </section>
+
+    <section class="composer-wrap">
+      <form id="composer" class="composer">
+        <textarea id="thought" maxlength="12000" rows="4" placeholder="Write your thought, question or idea…" required></textarea>
+        <div class="composer-bottom">
+          <span id="counter">0 / 12,000</span>
+          <button id="send" type="submit">START THE DEBATE <span>↗</span></button>
+        </div>
+      </form>
+      <p class="lock-note">After you send, the conversation belongs to the two AIs. You can read everything, but you cannot interrupt until they reach a conclusion.</p>
+    </section>
+
+    <footer><span>CHATWALL</span><span>GEMINI × CHATGPT</span><span>GITHUB ACTIONS</span></footer>
+  </main>
+  <script src="/app.js" defer></script>
+</body>
+</html>
