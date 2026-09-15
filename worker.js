@@ -7,7 +7,10 @@ const GH = 'https://api.github.com';
 function headers(env) {
   const token = String(env.PERSONAL_GITHUB_TOKEN || '').trim();
   if (!token) {
-    throw Object.assign(new Error('Cloudflare secret PERSONAL_GITHUB_TOKEN is missing. Run: wrangler secret put PERSONAL_GITHUB_TOKEN'), { status: 503 });
+    throw Object.assign(
+      new Error('Cloudflare secret PERSONAL_GITHUB_TOKEN is missing. Run: wrangler secret put PERSONAL_GITHUB_TOKEN'),
+      { status: 503 }
+    );
   }
   return {
     Authorization: `Bearer ${token}`,
@@ -36,7 +39,13 @@ async function gh(env, url, init = {}) {
     ...init,
     headers: { ...headers(env), ...(init.headers || {}) },
   });
-  const d = await r.json().catch(() => ({}));
+  const text = await r.text();
+  let d = {};
+  try {
+    d = text ? JSON.parse(text) : {};
+  } catch {
+    d = { message: text.slice(0, 400) };
+  }
   if (!r.ok) {
     const e = new Error(d.message || `GitHub API returned HTTP ${r.status}`);
     e.status = r.status;
@@ -83,6 +92,33 @@ async function latest(env) {
   return chats.length ? read(env, chats[0].path) : null;
 }
 
+async function dispatchGemini(env, chatId) {
+  try {
+    await gh(env, `/repos/${OWNER}/${REPO}/actions/workflows/gemini.yml/dispatches`, {
+      method: 'POST',
+      body: JSON.stringify({
+        ref: BRANCH,
+        inputs: { chat_id: String(chatId) },
+      }),
+    });
+    return { dispatched: true };
+  } catch (e) {
+    // Non-fatal: push path filter may still start Gemini. Surface hint for 403/404.
+    console.error('dispatchGemini failed', e.status, e.message);
+    return {
+      dispatched: false,
+      error: e.message,
+      github_status: e.status || null,
+      hint:
+        e.status === 404
+          ? 'gemini.yml workflow not found or Actions disabled'
+          : e.status === 403
+            ? 'Token needs Actions: write on this repo'
+            : 'Check Worker logs and PERSONAL_GITHUB_TOKEN scopes (repo + workflow)',
+    };
+  }
+}
+
 async function create(env, thought) {
   const text = String(thought || '').trim();
   if (text.length < 2) return json({ error: 'Write at least two characters.' }, 400);
@@ -90,7 +126,7 @@ async function create(env, thought) {
 
   const old = await latest(env);
   if (old && ['awaiting_gemini', 'awaiting_chatgpt', 'awaiting_gemini_counter'].includes(old.status)) {
-    return json({ error: 'A debate is already running. Wait for the final answer.' }, 409);
+    return json({ error: 'A debate is already running. Wait for the final answer.', chat: old }, 409);
   }
 
   const id = `${Date.now()}-${crypto.randomUUID()}`;
@@ -121,7 +157,8 @@ async function create(env, thought) {
     }),
   });
 
-  return json({ ok: true, chat });
+  const dispatch = await dispatchGemini(env, id);
+  return json({ ok: true, chat, workflow: dispatch });
 }
 
 async function health(env) {
@@ -140,7 +177,7 @@ async function health(env) {
           e.status === 503
             ? 'Set Cloudflare secret: wrangler secret put PERSONAL_GITHUB_TOKEN'
             : e.status === 401 || e.status === 403
-              ? 'Token lacks access to this repository or is invalid'
+              ? 'Token lacks access to this repository or is invalid (need repo + workflow)'
               : 'Check Worker logs',
       },
       status
@@ -184,12 +221,18 @@ export default {
       return env.ASSETS ? env.ASSETS.fetch(req) : new Response('Not found', { status: 404 });
     } catch (e) {
       console.error('CHATWALL API error', e);
-      const status = e.status === 503 ? 503 : e.status === 401 || e.status === 403 ? 502 : 500;
+      const status = e.status === 503 ? 503 : e.status === 401 || e.status === 403 ? 502 : e.status === 409 ? 409 : 500;
       return json(
         {
           error: e.status ? `GitHub API ${e.status}: ${e.message}` : e.message,
           github_status: e.status || null,
           github_url: e.github_url || null,
+          hint:
+            e.status === 401 || e.status === 403
+              ? 'PERSONAL_GITHUB_TOKEN is invalid or missing repo/workflow scopes'
+              : e.status === 404
+                ? 'Repo path or workflow not found'
+                : 'See Worker logs for the full exception',
         },
         status
       );

@@ -9,7 +9,7 @@ on:
     inputs:
       chat_id:
         description: Conversation ID
-        required: true
+        required: false
         type: string
 
 permissions:
